@@ -1,6 +1,5 @@
 # docker-nftables-scripts
 
-Правила nftables для [vpnbot](https://github.com/mercurykd/vpnbot) с фильтрацией по GeoIP/ASN.
 
 ## Архитектура vpnbot + nftables
 
