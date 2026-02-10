@@ -1,14 +1,51 @@
 # docker-nftables-scripts
 
-nftables rules for running Docker without iptables.
+Интегрированные правила nftables для хоста + Docker с фильтрацией по GeoIP/ASN.
 
-## Approach 1: Manual rules (all Docker versions)
+## Архитектура
 
-Use `docker-nft.conf` when you want full control over firewall rules and run Docker with iptables disabled.
+```
+docker-nft.conf               — основной конфиг (хост + Docker + ASN)
+docker-native-user-rules.conf — пользовательские правила для Docker 29+ native backend
+```
 
-### Setup
+### Схема прохождения трафика
 
-1. Disable Docker's iptables management in `/etc/docker/daemon.json`:
+```
+                          ┌─────────────────────┐
+                          │   geoip-mark-input   │  priority -1
+                          │  (маркировка @try,   │
+                          │   @asn по src IP)     │
+                          └──────────┬────────────┘
+                                     ▼
+ВХОДЯЩИЙ ──────────────────►  chain input  ◄──── policy DROP
+                              │ $BLACKLIST → drop
+                              │ $ASN tcp 443,22 → accept
+                              │ ct established → accept
+                              │ docker0 → accept
+                              └─► всё остальное → drop
+
+                          ┌──────────────────────┐
+                          │  geoip-mark-forward   │  priority -1
+                          │  (маркировка @try,    │
+                          │   @asn по src IP)      │
+                          └──────────┬─────────────┘
+                                     ▼
+FORWARD ───────────────────►  chain forward  ◄── policy DROP
+                              │ ct established → accept
+                              │ docker0↔docker0 → accept
+                              │ 10.0.0.0/8 внутр. → accept
+                              │ docker→DNS(53,443) → accept
+                              │ $BLACKLIST→docker → drop
+                              │ $ASN→docker → jump docker (порты)
+                              └─► всё остальное → drop
+```
+
+## Настройка
+
+### 1. Docker daemon
+
+`/etc/docker/daemon.json`:
 
 ```json
 {
@@ -16,71 +53,78 @@ Use `docker-nft.conf` when you want full control over firewall rules and run Doc
 }
 ```
 
-Or start the daemon with: `dockerd --iptables=false`
-
-2. Enable IP forwarding:
+### 2. IP forwarding
 
 ```bash
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.d/docker.conf
 ```
 
-3. Load the rules:
+### 3. Загрузка правил
 
 ```bash
 nft -f docker-nft.conf
 ```
 
-### Publishing ports
+## Политика доступа
 
-When publishing container ports, add rules to both tables:
+| Направление | Что разрешено | Фильтрация |
+|---|---|---|
+| Внешний мир → хост | TCP 443, 22; UDP 443 | Только @asn, блокировка @BLACKLIST |
+| Внешний мир → контейнеры | Опубликованные порты | Только @asn, блокировка @BLACKLIST |
+| Контейнер → контейнер | Весь трафик на docker0 | Без ограничений |
+| Контейнер → Docker сети | 10.0.0.0/8 | Без ограничений |
+| Контейнер → интернет | DNS: 8.8.8.8, 1.1.1.1, 8.8.4.4, 1.0.0.1 (53, 443) | Только указанные IP/порты |
+| Контейнер → всё остальное | Заблокировано | DROP |
 
-```
-# In "chain docker" of table inet docker — allow forwarded traffic:
-iif != docker0 tcp dport 8080 accept
+## Публикация портов
 
-# In "chain docker" of table ip dockernat — DNAT to container:
+Для публикации порта контейнера (например host:8080 → container 172.17.0.2:80) добавьте правила в два места:
+
+```bash
+# 1. table ip filter → chain docker — разрешить форвард:
+iifname != "docker0" tcp dport 8080 counter accept
+
+# 2. table ip dockernat → chain docker — DNAT:
 tcp dport 8080 dnat to 172.17.0.2:80
 ```
 
-### Custom Docker networks
+## Управление DNS для контейнеров
 
-For additional Docker networks (e.g. `br-abcdef123456` with subnet `172.18.0.0/16`), duplicate the relevant rules replacing `docker0` / `172.17.0.0/16` with your bridge name and subnet. Add isolation rules between networks in `docker-isolation-stage-1` and `docker-isolation-stage-2`.
+DNS-серверы задаются через именованный set `dns_servers`. Для изменения списка:
 
-## Approach 2: Docker 29+ native nftables backend (experimental)
+```bash
+# Просмотр текущего set
+nft list set ip filter dns_servers
 
-Docker 29+ has experimental nftables support. Docker manages its own tables (`ip docker-bridges`, `ip6 docker-bridges`) automatically.
+# Добавить DNS-сервер на лету
+nft add element ip filter dns_servers { 9.9.9.9 }
 
-### Setup
+# Удалить DNS-сервер
+nft delete element ip filter dns_servers { 9.9.9.9 }
+```
 
-1. Configure the nftables backend in `/etc/docker/daemon.json`:
+## Пользовательские правила (docker-user)
+
+Добавляйте свои правила форвардинга в `chain docker-user`:
+
+```bash
+# Заблокировать контейнерам доступ к LAN
+nft add rule ip filter docker-user iifname "docker0" ip daddr 192.168.0.0/16 drop
+
+# Заблокировать конкретный контейнер
+nft add rule ip filter docker-user ip saddr 172.17.0.5 drop
+```
+
+## Docker 29+ native nftables (experimental)
+
+Альтернативный подход — Docker сам управляет таблицами. См. `docker-native-user-rules.conf`.
 
 ```json
-{
-  "firewall-backend": "nftables"
-}
+{ "firewall-backend": "nftables" }
 ```
 
-2. Enable IP forwarding (Docker will **not** do this automatically with the nftables backend):
-
-```bash
-sysctl -w net.ipv4.ip_forward=1
-```
-
-3. Use `docker-native-user-rules.conf` for custom rules:
-
-```bash
-nft -f docker-native-user-rules.conf
-```
-
-### Key differences from iptables backend
-
-- No `DOCKER-USER` chain — use separate tables with priority-based ordering instead
-- Docker fully owns its tables — do not modify `ip docker-bridges` directly
-- Use `--bridge-accept-fwmark` to allow traffic Docker would otherwise drop
-- Does not work with Swarm mode (overlay network rules not yet migrated)
-
-## References
+## Ссылки
 
 - [Docker with nftables](https://docs.docker.com/engine/network/firewall-nftables/)
 - [Docker packet filtering and firewalls](https://docs.docker.com/engine/network/packet-filtering-firewalls/)
