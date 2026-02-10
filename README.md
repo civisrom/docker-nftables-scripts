@@ -1,44 +1,87 @@
 # docker-nftables-scripts
 
-Интегрированные правила nftables для хоста + Docker с фильтрацией по GeoIP/ASN.
+Правила nftables для [vpnbot](https://github.com/mercurykd/vpnbot) с фильтрацией по GeoIP/ASN.
 
-## Архитектура
+## Архитектура vpnbot + nftables
 
 ```
-docker-nft.conf               — основной конфиг (хост + Docker + ASN)
+docker-nft.conf               — основной конфиг (хост + vpnbot + ASN)
 docker-native-user-rules.conf — пользовательские правила для Docker 29+ native backend
+```
+
+### Сетевая схема vpnbot
+
+```
+Внешний клиент
+    │
+    ├─ :80/tcp ──DNAT──► nginx (10.10.0.2)
+    │                      └─► php (10.10.0.7:8080)
+    │                      └─► adguard DoH (/dns-query)
+    │
+    ├─ :443/tcp+udp ─DNAT─► upstream (10.10.0.10) ─── SNI routing:
+    │                          ├─► nginx (10.10.0.2:443)    [default]
+    │                          ├─► xray (10.10.0.9:443)     [VLESS Reality]
+    │                          ├─► openconnect (10.10.0.11)  [ocserv]
+    │                          └─► naive (10.10.0.12:443)    [NaiveProxy]
+    │
+    ├─ :51820/udp ──DNAT──► wireguard (10.10.0.4)
+    │                          └─► VPN клиенты 10.0.1.0/24
+    │
+    └─ :51821/udp ──DNAT──► wireguard1 (10.10.0.14)
+                               └─► VPN клиенты 10.0.3.0/24
+
+Docker-сети:
+  default:  10.10.0.0/24  (все контейнеры)
+  xray:     10.10.1.0/24  (nginx ↔ xray)
+
+VPN-клиенты:
+  WG:  10.0.1.0/24
+  OC:  10.0.2.0/24
+  WG1: 10.0.3.0/24
+
+DNS (AdGuard): 10.10.0.5 → upstream: 8.8.8.8, 1.1.1.1
 ```
 
 ### Схема прохождения трафика
 
 ```
                           ┌─────────────────────┐
-                          │   geoip-mark-input   │  priority -1
-                          │  (маркировка @try,   │
-                          │   @asn по src IP)     │
-                          └──────────┬────────────┘
+                          │  geoip-mark-input    │  priority -1
+                          │  @try, @asn          │
+                          └──────────┬───────────┘
                                      ▼
 ВХОДЯЩИЙ ──────────────────►  chain input  ◄──── policy DROP
                               │ $BLACKLIST → drop
-                              │ $ASN tcp 443,22 → accept
+                              │ $ASN tcp {443,22}, udp 443 → accept
+                              │ $ASN udp {51820,51821} → accept (WG)
                               │ ct established → accept
-                              │ docker0 → accept
-                              └─► всё остальное → drop
+                              │ Docker nets → accept
+                              └─► остальное → drop
 
                           ┌──────────────────────┐
                           │  geoip-mark-forward   │  priority -1
-                          │  (маркировка @try,    │
-                          │   @asn по src IP)      │
-                          └──────────┬─────────────┘
+                          │  @try, @asn           │
+                          └──────────┬────────────┘
                                      ▼
 FORWARD ───────────────────►  chain forward  ◄── policy DROP
                               │ ct established → accept
-                              │ docker0↔docker0 → accept
-                              │ 10.0.0.0/8 внутр. → accept
-                              │ docker→DNS(53,443) → accept
-                              │ $BLACKLIST→docker → drop
-                              │ $ASN→docker → jump docker (порты)
-                              └─► всё остальное → drop
+                              │ docker ↔ docker → accept
+                              │ vpn_clients ↔ docker → accept
+                              │ docker → DNS (53,443) → accept
+                              │ docker → интернет → accept (VPN)
+                              │ $BLACKLIST → docker → drop
+                              │ $ASN → docker → accept (DNAT)
+                              └─► остальное → drop
+
+DNAT (prerouting):
+  :80    → nginx    (10.10.0.2)
+  :443   → upstream (10.10.0.10)
+  :51820 → wg       (10.10.0.4)
+  :51821 → wg1      (10.10.0.14)
+
+MASQUERADE (postrouting):
+  10.10.0.0/24 → публичный IP
+  10.10.1.0/24 → публичный IP
 ```
 
 ## Настройка
@@ -66,66 +109,73 @@ echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.d/docker.conf
 nft -f docker-nft.conf
 ```
 
+### 4. Запуск vpnbot
+
+```bash
+systemctl start vpnbot
+```
+
 ## Политика доступа
 
 | Направление | Что разрешено | Фильтрация |
 |---|---|---|
-| Внешний мир → хост | TCP 443, 22; UDP 443 | Только @asn, блокировка @BLACKLIST |
-| Внешний мир → контейнеры | Опубликованные порты | Только @asn, блокировка @BLACKLIST |
-| Контейнер → контейнер | Весь трафик на docker0 | Без ограничений |
-| Контейнер → Docker сети | 10.0.0.0/8 | Без ограничений |
-| Контейнер → интернет | DNS: 8.8.8.8, 1.1.1.1, 8.8.4.4, 1.0.0.1 (53, 443) | Только указанные IP/порты |
-| Контейнер → всё остальное | Заблокировано | DROP |
+| Внешний мир → хост | TCP 443, 22; UDP 443, 51820, 51821 | Только @asn, блокировка @BLACKLIST |
+| Внешний мир → контейнеры | Порты 80, 443, 51820, 51821 (через DNAT) | Только @asn, блокировка @BLACKLIST |
+| Контейнер ↔ контейнер | 10.10.0.0/24, 10.10.1.0/24 | Без ограничений |
+| VPN-клиенты ↔ контейнеры | 10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24 | Без ограничений |
+| Контейнеры → DNS | 8.8.8.8, 1.1.1.1, 8.8.4.4, 1.0.0.1 (53, 443) | Без ограничений |
+| Контейнеры → интернет | Весь трафик (VPN-маршрутизация клиентов) | Без ограничений |
+| Всё остальное | Заблокировано | DROP |
 
-## Публикация портов
+## Именованные наборы (sets)
 
-Для публикации порта контейнера (например host:8080 → container 172.17.0.2:80) добавьте правила в два места:
-
-```bash
-# 1. table ip filter → chain docker — разрешить форвард:
-iifname != "docker0" tcp dport 8080 counter accept
-
-# 2. table ip dockernat → chain docker — DNAT:
-tcp dport 8080 dnat to 172.17.0.2:80
-```
-
-## Управление DNS для контейнеров
-
-DNS-серверы задаются через именованный set `dns_servers`. Для изменения списка:
+Наборы можно менять на лету без перезагрузки конфига:
 
 ```bash
-# Просмотр текущего set
+# Просмотр DNS-серверов
 nft list set ip filter dns_servers
 
-# Добавить DNS-сервер на лету
+# Добавить DNS
 nft add element ip filter dns_servers { 9.9.9.9 }
 
-# Удалить DNS-сервер
-nft delete element ip filter dns_servers { 9.9.9.9 }
+# Просмотр Docker-подсетей
+nft list set ip filter docker_nets
+
+# Добавить новую Docker-сеть
+nft add element ip filter docker_nets { 172.18.0.0/24 }
+
+# Просмотр VPN-клиентских подсетей
+nft list set ip filter vpn_clients
+
+# Добавить VPN-подсеть
+nft add element ip filter vpn_clients { 10.0.4.0/24 }
 ```
 
-## Пользовательские правила (docker-user)
+## Кастомизация
 
-Добавляйте свои правила форвардинга в `chain docker-user`:
+### Порты WireGuard
+
+Если WG порты отличаются от 51820/51821, измените переменные в начале конфига:
+
+```
+define WGPORT  = 51820
+define WG1PORT = 51821
+```
+
+### Добавление нового сервиса
+
+Для нового контейнера с пробросом порта:
 
 ```bash
-# Заблокировать контейнерам доступ к LAN
-nft add rule ip filter docker-user iifname "docker0" ip daddr 192.168.0.0/16 drop
+# 1. Добавить DNAT в prerouting (table ip dockernat):
+nft add rule ip dockernat prerouting tcp dport 8443 dnat to 10.10.0.X:8443
 
-# Заблокировать конкретный контейнер
-nft add rule ip filter docker-user ip saddr 172.17.0.5 drop
-```
-
-## Docker 29+ native nftables (experimental)
-
-Альтернативный подход — Docker сам управляет таблицами. См. `docker-native-user-rules.conf`.
-
-```json
-{ "firewall-backend": "nftables" }
+# 2. Добавить подсеть в docker_nets (если новая сеть):
+nft add element ip filter docker_nets { 10.10.2.0/24 }
 ```
 
 ## Ссылки
 
+- [vpnbot](https://github.com/mercurykd/vpnbot)
 - [Docker with nftables](https://docs.docker.com/engine/network/firewall-nftables/)
 - [Docker packet filtering and firewalls](https://docs.docker.com/engine/network/packet-filtering-firewalls/)
-- [Docker with iptables](https://docs.docker.com/engine/network/firewall-iptables/)
