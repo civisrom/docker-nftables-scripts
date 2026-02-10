@@ -4,7 +4,7 @@
 ## Архитектура vpnbot + nftables
 
 ```
-docker-nft.conf               — основной конфиг (хост + vpnbot + ASN)
+docker-nft.conf               — основной конфиг (хост + v + ASN)
 docker-native-user-rules.conf — пользовательские правила для Docker 29+ native backend
 ```
 
