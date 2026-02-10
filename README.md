@@ -172,9 +172,3 @@ nft add rule ip dockernat prerouting tcp dport 8443 dnat to 10.10.0.X:8443
 # 2. Добавить подсеть в docker_nets (если новая сеть):
 nft add element ip filter docker_nets { 10.10.2.0/24 }
 ```
-
-## Ссылки
-
-- [vpnbot](https://github.com/mercurykd/vpnbot)
-- [Docker with nftables](https://docs.docker.com/engine/network/firewall-nftables/)
-- [Docker packet filtering and firewalls](https://docs.docker.com/engine/network/packet-filtering-firewalls/)
