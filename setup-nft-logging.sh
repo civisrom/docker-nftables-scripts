@@ -1,6 +1,6 @@
 #!/bin/bash
 # Скрипт настройки и диагностики логирования nftables + logrotate
-# Совместим с конфигом: docker-nft.conf
+# Совместим с конфигом: docker-nft.conf (хост nginx + Docker mtproto)
 # Автор: Nik
 # Требует: root
 
@@ -61,21 +61,14 @@ echo -e "${GREEN}✓ Права доступа установлены${NC}"
 #   INPUT-DROP:       — дроп входящего трафика
 #   INPUT-SYNFLOOD:   — SYN-flood на хост (per-source meter)
 #   INPUT-PORTSCAN:   — сканирование портов (per-source meter)
+#   IPTABLES-RK:      — RKN blacklist INPUT
 #
 # FORWARD chain:
 #   FORWARD-DROP:     — дроп forward трафика
-#   FWD-DOCKER:       — трафик между Docker-контейнерами
-#   FWD-VPN-IN:       — VPN-клиенты → Docker
-#   FWD-VPN-OUT:      — Docker → VPN-клиенты
-#   FWD-DNS:          — DNS-трафик контейнеров (udp/tcp 53, tcp 443)
-#   FWD-DOH:          — DoH/QUIC-трафик контейнеров (udp 443)
-#   FWD-INET:         — контейнеры → интернет
+#   FWD-INET:         — контейнеры → интернет (mtproto)
 #   FWD-SYNFLOOD:     — SYN-flood на контейнеры (per-source meter)
 #   FWD-ASN:          — ASN-фильтрация → контейнеры
 #   FWD-TG:           — TG GeoIP → контейнеры
-#
-# Blacklist (закомментированы в nft, готовы на будущее):
-#   IPTABLES-RK:      — blacklist INPUT
 #   DOCKER-BL:        — blacklist FORWARD
 
 echo "3. Обновление конфигурации rsyslog..."
@@ -110,17 +103,6 @@ cat > /etc/rsyslog.d/10-nftables.conf << 'EOF'
 & stop
 
 # ── Forward трафик по категориям ──
-:msg,contains,"FWD-DOCKER:" /var/log/nftables/fwd-docker.log
-& stop
-
-:msg,contains,"FWD-VPN-IN:" /var/log/nftables/fwd-vpn.log
-:msg,contains,"FWD-VPN-OUT:" /var/log/nftables/fwd-vpn.log
-& stop
-
-:msg,contains,"FWD-DNS:" /var/log/nftables/fwd-dns.log
-:msg,contains,"FWD-DOH:" /var/log/nftables/fwd-dns.log
-& stop
-
 :msg,contains,"FWD-INET:" /var/log/nftables/fwd-inet.log
 & stop
 
@@ -128,7 +110,7 @@ cat > /etc/rsyslog.d/10-nftables.conf << 'EOF'
 :msg,contains,"FWD-TG:" /var/log/nftables/fwd-geo.log
 & stop
 
-# ── Blacklist (закомментированы в nft, готовы к использованию) ──
+# ── Blacklist ──
 :msg,contains,"IPTABLES-RK:" /var/log/nftables/blacklist.log
 & stop
 
@@ -154,9 +136,6 @@ LOG_FILES=(
     input-attacks.log
     forward-drop.log
     fwd-synflood.log
-    fwd-docker.log
-    fwd-vpn.log
-    fwd-dns.log
     fwd-inet.log
     fwd-geo.log
     blacklist.log
@@ -279,14 +258,11 @@ echo "Соответствие префиксов → лог-файлов:"
 echo "  INPUT-DROP:       → input-drop.log"
 echo "  INPUT-SYNFLOOD:   → input-attacks.log"
 echo "  INPUT-PORTSCAN:   → input-attacks.log"
+echo "  IPTABLES-RK:      → blacklist.log"
 echo "  FORWARD-DROP:     → forward-drop.log"
 echo "  FWD-SYNFLOOD:     → fwd-synflood.log"
-echo "  FWD-DOCKER:       → fwd-docker.log"
-echo "  FWD-VPN-IN/OUT:   → fwd-vpn.log"
-echo "  FWD-DNS/DOH:      → fwd-dns.log"
 echo "  FWD-INET:         → fwd-inet.log"
 echo "  FWD-ASN/TG:       → fwd-geo.log"
-echo "  IPTABLES-RK:      → blacklist.log"
 echo "  DOCKER-BL:        → blacklist.log"
 echo "  (все вместе)      → nft-all.log"
 
