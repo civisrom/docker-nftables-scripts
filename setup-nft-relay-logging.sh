@@ -72,8 +72,12 @@ echo -e "${GREEN}✓ Права доступа установлены${NC}"
 #   RELAY-BL:         — RKN blacklist → relay targets
 #   RELAY-GE-ASN:     — релей → 2-ge от ASN (VLESS TCP 443)
 #   RELAY-GE-TG:      — релей → 2-ge от TG  (VLESS TCP 443)
+#   RELAY-GE-MTP-ASN: — релей → 2-ge от ASN (MTProto TCP 4443)
+#   RELAY-GE-MTP-TG:  — релей → 2-ge от TG  (MTProto TCP 4443)
 #   RELAY-NL-ASN:     — релей → 3-nl от ASN (VLESS TCP 443)
 #   RELAY-NL-TG:      — релей → 3-nl от TG  (VLESS TCP 443)
+#   RELAY-NL-MTP-ASN: — релей → 3-nl от ASN (MTProto TCP 4443)
+#   RELAY-NL-MTP-TG:  — релей → 3-nl от TG  (MTProto TCP 4443)
 #
 # Закомментированы в nft (готовы при активации):
 #   RELAY-GE-WG-ASN:  — релей → 2-ge от ASN (AmneziaWG UDP)
@@ -300,11 +304,15 @@ echo
 echo "  FORWARD chain:"
 echo "  RELAY-GE-ASN:     → relay-ge.log        (→ 2-ge от ASN, VLESS)"
 echo "  RELAY-GE-TG:      → relay-ge.log        (→ 2-ge от TG, VLESS)"
+echo "  RELAY-GE-MTP-ASN: → relay-ge.log        (→ 2-ge от ASN, MTProto)"
+echo "  RELAY-GE-MTP-TG:  → relay-ge.log        (→ 2-ge от TG, MTProto)"
 echo "  RELAY-GE-WG-ASN:  → relay-ge.log        (→ 2-ge от ASN, WG)*"
 echo "  RELAY-GE-WG-TG:   → relay-ge.log        (→ 2-ge от TG, WG)*"
 echo "  RELAY-GE-WEB:     → relay-ge.log        (→ 2-ge Web UI)*"
 echo "  RELAY-NL-ASN:     → relay-nl.log        (→ 3-nl от ASN, VLESS)"
 echo "  RELAY-NL-TG:      → relay-nl.log        (→ 3-nl от TG, VLESS)"
+echo "  RELAY-NL-MTP-ASN: → relay-nl.log        (→ 3-nl от ASN, MTProto)"
+echo "  RELAY-NL-MTP-TG:  → relay-nl.log        (→ 3-nl от TG, MTProto)"
 echo "  RELAY-NL-WG-ASN:  → relay-nl.log        (→ 3-nl от ASN, WG)*"
 echo "  RELAY-NL-WG-TG:   → relay-nl.log        (→ 3-nl от TG, WG)*"
 echo "  RELAY-NL-WEB:     → relay-nl.log        (→ 3-nl Web UI)*"
